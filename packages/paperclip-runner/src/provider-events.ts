@@ -15,6 +15,7 @@ export interface AcpRuntimeEventShape {
   text?: string;
   status?: string;
   rawOutput?: unknown;
+  inputUpdated?: boolean;
   tag?: string;
   entries?: Array<{ content: string; status?: string }>;
   [key: string]: unknown;
@@ -76,32 +77,38 @@ export interface TypedEventFamilyCapability {
   detailLevel: "summary" | "structured";
 }
 
-export type CanonicalProviderEventType =
-  | "plan.updated"
-  | "tool.execution.started"
-  | "tool.execution.progressed"
-  | "tool.execution.completed"
-  | "research.started"
-  | "research.progressed"
-  | "research.completed"
-  | "delegation.started"
-  | "delegation.updated"
-  | "delegation.completed"
-  | "model.route.changed"
-  | "model.verification.updated"
-  | "context.compacted"
-  | "artifact.viewed"
-  | "artifact.generated"
-  | "review.mode.changed"
-  | "hook.started"
-  | "hook.completed"
-  | "memory.citation.referenced"
-  | "safety.review.started"
-  | "safety.review.completed"
-  | "terminal.input.sent"
-  | "wait.started"
-  | "wait.completed"
-  | "provider.notice.recorded";
+export const CANONICAL_PROVIDER_EVENT_TYPES = [
+  "harness.diagnostic",
+  "plan.updated",
+  "tool.execution.started",
+  "tool.execution.progressed",
+  "tool.execution.completed",
+  "research.started",
+  "research.progressed",
+  "research.completed",
+  "delegation.started",
+  "delegation.updated",
+  "delegation.completed",
+  "model.route.changed",
+  "model.verification.updated",
+  "context.compacted",
+  "artifact.viewed",
+  "artifact.generated",
+  "review.mode.changed",
+  "hook.started",
+  "hook.completed",
+  "memory.citation.referenced",
+  "safety.review.started",
+  "safety.review.completed",
+  "terminal.input.sent",
+  "wait.started",
+  "wait.completed",
+  "provider.notice.recorded",
+] as const;
+export type CanonicalProviderEventType = (typeof CANONICAL_PROVIDER_EVENT_TYPES)[number];
+export function isCanonicalProviderEventType(value: unknown): value is CanonicalProviderEventType {
+  return CANONICAL_PROVIDER_EVENT_TYPES.some(type => value === type);
+}
 
 export interface CanonicalProviderEvent {
   eventType: CanonicalProviderEventType;
@@ -907,7 +914,9 @@ export function canonicalProviderEventsFromCodex(
               : "turn",
           recoverable: method !== "error",
           userActionable: method === "error" || method === "warning",
-          summary: text(params.message, "Provider notice").slice(0, 4000),
+          summary: [params.summary, params.message, params.details]
+            .map((value) => text(value).trim())
+            .find(Boolean)?.slice(0, 4000) || "Provider notice",
         },
         itemId,
       },
@@ -1125,6 +1134,11 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
       target: safeAcpLocation(event.locations?.[0]),
       namespace: mcp?.namespace ?? null,
       readOnly: ["read", "search", "list"].includes(operation),
+      ...(Object.prototype.hasOwnProperty.call(event, "rawInput")
+        ? { inputUpdated: event.rawInput !== undefined }
+        : typeof event.inputUpdated === "boolean"
+          ? { inputUpdated: event.inputUpdated }
+          : {}),
       status,
       durationMs: null,
       exitCode: null,

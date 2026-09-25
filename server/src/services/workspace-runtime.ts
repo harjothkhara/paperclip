@@ -5114,8 +5114,11 @@ export async function waitForRuntimeServiceReadiness(input: {
   const now = input.now ?? Date.now;
   const timeoutSec = resolveWorkspaceRuntimeReadinessTimeoutSec(input.service);
   const intervalMs = Math.max(100, asNumber(readiness.intervalMs, 500));
-  const deadline = now() + timeoutSec * 1000;
+  const startedAt = now();
+  const deadline = startedAt + timeoutSec * 1000;
   let lastError = "service did not become ready";
+  let lastCause: unknown;
+  let probes = 0;
   let sawServiceFailure = false;
   while (now() < deadline) {
     const remainingMs = deadline - now();
@@ -5124,23 +5127,34 @@ export async function waitForRuntimeServiceReadiness(input: {
     const boundedByDeadline = remainingMs <= RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS;
     const probeBudgetMs = Math.max(1, Math.min(RUNTIME_SERVICE_READINESS_PROBE_TIMEOUT_MS, remainingMs));
     let probeSignal: AbortSignal | undefined;
+    probes += 1;
     try {
       probeSignal = AbortSignal.timeout(probeBudgetMs);
       const response = await fetchImpl(readinessUrl, { signal: probeSignal });
       if (response.ok) return;
       lastError = `received HTTP ${response.status}`;
+      lastCause = undefined;
       sawServiceFailure = true;
     } catch (err) {
       const abortedByDeadline = Boolean(probeSignal?.aborted) && boundedByDeadline;
       if (!abortedByDeadline || !sawServiceFailure) {
+        lastCause = err;
         lastError = err instanceof Error ? err.message : String(err);
+        // Node fetch hides connection errors behind "fetch failed". Retain the
+        // transport cause so a refused port is distinguishable from a timeout.
+        if (err instanceof Error && err.cause instanceof Error) {
+          lastError += `: ${err.cause.message}`;
+        }
         sawServiceFailure = true;
       }
     }
     if (now() >= deadline) break;
     await delay(Math.min(intervalMs, Math.max(0, deadline - now())));
   }
-  throw new Error(`Readiness check failed for ${readinessUrl}: ${lastError}`);
+  throw new Error(
+    `Readiness check failed for ${readinessUrl}: ${lastError} (${probes} probes over ${now() - startedAt}ms)`,
+    { cause: lastCause },
+  );
 }
 
 async function waitForAllocatedPortBind(input: {

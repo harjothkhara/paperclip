@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   PRP_V1_EVENT_TYPES,
+  PRP_V2_EVENT_TYPES,
   REDACTED_EVENT_VALUE,
+  redactAgentAdapterConfig,
   redactEventPayload,
   redactSensitiveText,
   sanitizeRecord,
@@ -20,6 +22,31 @@ describe("redaction", () => {
       ),
     ) as { properties: { eventType: { enum: string[] } } };
     expect([...PRP_V1_EVENT_TYPES]).toEqual(schema.properties.eventType.enum);
+  });
+
+  it("keeps the v2 additions in parity with the canonical v2 schema", () => {
+    const v1 = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../packages/paperclip-runner/protocol/schemas/event.schema.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { properties: { eventType: { enum: string[] } } };
+    const v2 = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../../packages/paperclip-runner/protocol/schemas/event-v2.schema.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    ) as { properties: { eventType: { enum: string[] } } };
+    const v1Types = new Set(v1.properties.eventType.enum);
+    expect([...PRP_V2_EVENT_TYPES]).toEqual(
+      v2.properties.eventType.enum.filter((eventType) => !v1Types.has(eventType)),
+    );
   });
 
   it("preserves every discriminator in the cross-language replay stream", () => {
@@ -40,6 +67,60 @@ describe("redaction", () => {
       expect(envelope.sourceEventId).toBe(event.sourceEventId);
       expect(envelope.payload).toEqual(event.payload);
     }
+  });
+
+  it("preserves current PRP v2 session discriminators", () => {
+    const schema = JSON.parse(readFileSync(
+      new URL("../../../packages/paperclip-runner/protocol/schemas/event-v2.schema.json", import.meta.url),
+      "utf8",
+    )) as { properties: { eventType: { enum: string[] } } };
+    for (const eventType of schema.properties.eventType.enum) {
+      const event = {
+        schema: "paperclip.prp.event.v2",
+        schemaVersion: 2,
+        eventType,
+        payload: { safe: true },
+      };
+      const sanitized = redactEventPayload({ prpEvent: event });
+      expect(sanitized?.prpEvent).toEqual(event);
+    }
+  });
+
+  it("redacts unknown or mismatched PRP discriminators", () => {
+    const unknown = redactEventPayload({
+      prpEvent: {
+        schema: "paperclip.prp.event.v2",
+        schemaVersion: 2,
+        eventType: "session.not-a-real.event",
+      },
+    });
+    expect((unknown?.prpEvent as Record<string, unknown>).eventType).toBe(
+      REDACTED_EVENT_VALUE,
+    );
+
+    const mismatched = redactEventPayload({
+      prpEvent: {
+        schema: "paperclip.prp.event.v1",
+        schemaVersion: 2,
+        eventType: "session.capabilities.updated",
+      },
+    });
+    expect((mismatched?.prpEvent as Record<string, unknown>).eventType).toBe(
+      REDACTED_EVENT_VALUE,
+    );
+
+    const secretPayload = redactEventPayload({
+      prpEvent: {
+        schema: "paperclip.prp.event.v2",
+        schemaVersion: 2,
+        eventType: "session.capabilities.updated",
+        payload: { authorization: "Bearer secret-value" },
+      },
+    });
+    expect(
+      ((secretPayload?.prpEvent as Record<string, unknown>).payload as Record<string, unknown>)
+        .authorization,
+    ).toBe(REDACTED_EVENT_VALUE);
   });
 
   it("redacts sensitive keys and nested secret values", () => {
@@ -198,12 +279,14 @@ describe("redaction", () => {
       "environment.workspace.realize",
       "native.coordinator.claim",
       "runner.transport.selected",
+      "runner.prp.authenticate",
       "runner.prp.route.register",
       "runner.transport.connect",
       "runner.session.bootstrap",
       "runner.turn.submit",
       "runner.session.startup",
       "provider.turn.queue",
+      "question_response.to_run_created",
       "native.session.execute",
       "native.result.finalize",
       "task.run.measured",
@@ -625,5 +708,74 @@ second-line\" status=401`,
 
     expect(result?.args).toEqual(["--api-key", "not-a-command-secret"]);
     expect(result?.argv).toEqual(["--api-key", REDACTED_EVENT_VALUE]);
+  });
+
+  it("redacts every plaintext agent env binding while preserving secret references", () => {
+    const plaintextValue = "adapter-env-value-must-not-leak";
+
+    const result = redactAgentAdapterConfig({
+      command: "pnpm agent:run",
+      env: {
+        EXISTING_VALUE: plaintextValue,
+        NEW_VALUE: { type: "plain", value: plaintextValue },
+        SECRET_REFERENCE: {
+          type: "secret_ref",
+          secretId: "55555555-5555-4555-8555-555555555555",
+          version: "latest",
+        },
+        USER_SECRET_REFERENCE: {
+          type: "user_secret_ref",
+          key: "GITHUB_TOKEN",
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      command: "pnpm agent:run",
+      env: {
+        EXISTING_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
+        NEW_VALUE: { type: "plain", value: REDACTED_EVENT_VALUE },
+        SECRET_REFERENCE: {
+          type: "secret_ref",
+          secretId: "55555555-5555-4555-8555-555555555555",
+          version: "latest",
+        },
+        USER_SECRET_REFERENCE: {
+          type: "user_secret_ref",
+          key: "GITHUB_TOKEN",
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(plaintextValue);
+  });
+
+  it("redacts non-env adapter keys while leaving env binding shapes intact", () => {
+    const result = redactAgentAdapterConfig({
+      command: "pnpm agent:run",
+      apiKey: "adapter-level-secret",
+      env: {
+        API_KEY: "env-level-secret",
+        AUTH_TOKEN: { type: "plain", value: "another-env-secret" },
+      },
+    });
+
+    // Non-env keys still go through the shared payload sanitizer.
+    expect(result.apiKey).toBe(REDACTED_EVENT_VALUE);
+    expect(result.command).toBe("pnpm agent:run");
+
+    // Env bindings keep their binding shape rather than collapsing to a bare
+    // sentinel string, which is what a second sanitizer pass would produce for
+    // these sensitive-looking key names.
+    expect(result.env).toEqual({
+      API_KEY: { type: "plain", value: REDACTED_EVENT_VALUE },
+      AUTH_TOKEN: { type: "plain", value: REDACTED_EVENT_VALUE },
+    });
+  });
+
+  it("redacts adapter configs that have no env block", () => {
+    expect(redactAgentAdapterConfig({ command: "pnpm agent:run", apiKey: "secret" })).toEqual({
+      command: "pnpm agent:run",
+      apiKey: REDACTED_EVENT_VALUE,
+    });
   });
 });

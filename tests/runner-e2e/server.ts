@@ -1,10 +1,14 @@
+import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
+import { qualifyLegacyClaudeCli } from "./legacy-claude-cli.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { prepareRunnerE2EServerConfig } from "./server-config.js";
 import {
   assertIsolatedServerEnvironment,
   buildPaperclipServerEnvironment,
+  runnerE2EServerControlPaths,
 } from "./harness-env.js";
 
 function required(name: string) {
@@ -19,19 +23,20 @@ const paperclipHome = required("PAPERCLIP_HOME");
 const configPath = required("PAPERCLIP_CONFIG");
 const port = required("PAPERCLIP_RUNNER_E2E_PORT");
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
-const tsxCli = path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs");
-const paperclipCli = path.join(repositoryRoot, "cli/src/index.ts");
-const controlDirectory = path.join(temporaryRoot, "control");
-const restartRequestPath = path.join(
+const paperclipCli = path.join(repositoryRoot, "tests/runner-e2e/server-entry.ts");
+const {
   controlDirectory,
-  "server-restart.request.json",
-);
-const restartAckPath = path.join(controlDirectory, "server-restart.ack.json");
+  restartRequestPath,
+  restartAcknowledgementPath: restartAckPath,
+} = runnerE2EServerControlPaths(temporaryRoot);
 const restartTimeoutMs = 180_000;
 const gracefulStopTimeoutMs = 30_000;
 const serverEnvironment = buildPaperclipServerEnvironment(process.env, {
   NODE_ENV: "test",
   PORT: port,
+  // Keep provider caches attempt-private without changing Playwright's browser
+  // cache lookup in the parent process.
+  XDG_CACHE_HOME: path.join(temporaryRoot, "xdg-cache"),
   PAPERCLIP_HOME: paperclipHome,
   PAPERCLIP_CONFIG: configPath,
   PAPERCLIP_INSTANCE_ID: required("PAPERCLIP_INSTANCE_ID"),
@@ -106,7 +111,7 @@ function startServer() {
   }
   const candidate = spawn(
     process.execPath,
-    [tsxCli, paperclipCli, "onboard", "--yes", "--run"],
+    runnerE2ETypeScriptProcessArgs(repositoryRoot, paperclipCli, ["onboard", "--yes", "--run"]),
     {
       cwd: repositoryRoot,
       env: definedServerEnvironment,
@@ -344,6 +349,17 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 }
 
 async function supervise() {
+  const executionIds: string[] = JSON.parse(process.env.PAPERCLIP_RUNNER_E2E_EXECUTION_IDS ?? "[]");
+  if (executionIds.some(id => id.includes(".legacy-claude.local."))) {
+    definedServerEnvironment.PATH = await qualifyLegacyClaudeCli(temporaryRoot, definedServerEnvironment);
+  }
+  const databaseReservation = await prepareRunnerE2EServerConfig({
+    temporaryRoot,
+    configPath,
+    serverPort: Number(port),
+  });
+  // Postgres needs the socket itself; release immediately before child spawn.
+  await databaseReservation?.close();
   startServer();
   let lastRestartRequestId: string | null = null;
   while (!shutdownRequested()) {

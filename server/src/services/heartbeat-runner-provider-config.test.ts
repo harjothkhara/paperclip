@@ -87,7 +87,7 @@ describe("Paperclip Runner native provider configuration", () => {
       contextBucket: "paperclip-context",
       contextPrefix: "runner/",
       contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-      qualificationRevision: "aws-agentcore-harness-v1",
+      qualificationRevision: "aws-agentcore-harness-context-v2",
       eventExpiryDays: 90,
     };
     const stored = {
@@ -147,7 +147,7 @@ describe("Paperclip Runner native provider configuration", () => {
     },
   );
 
-  it("applies the safe provider permission default from adapter config", () => {
+  it("applies the full-auto provider permission default from adapter config", () => {
     expect(
       resolvePaperclipRunnerNativeProviderInput({
         backend: "opencode_server",
@@ -159,7 +159,7 @@ describe("Paperclip Runner native provider configuration", () => {
     ).toEqual({
       provider: "opencode",
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
-      opencodePermissionMode: "ask",
+      opencodePermissionMode: "allow",
     });
   });
 
@@ -224,7 +224,7 @@ describe("Paperclip Runner native provider configuration", () => {
           contextBucket: "paperclip-context",
           contextPrefix: "runner/",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
           defaultMaxEstimatedSessionCostUsd: 1.25,
@@ -278,7 +278,7 @@ describe("Paperclip Runner native provider configuration", () => {
           contextBucket: "paperclip-context",
           contextPrefix: "runner/",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
           defaultMaxEstimatedSessionCostUsd: 1.25,
@@ -352,7 +352,7 @@ describe("Paperclip Runner native provider configuration", () => {
           contextBucket: "paperclip-context",
           contextPrefix: "runner/",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/key-1",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           defaultModel: "global.anthropic.claude-sonnet-4-6",
           eventExpiryDays: 90,
           defaultMaxEstimatedSessionCostUsd: 1.25,

@@ -63,6 +63,22 @@ describe("buildCodexLocalConfig", () => {
     });
   });
 
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("persists the exact %s model and supported controls", (model, effort) => {
+    const config = buildCodexLocalConfig(
+      makeValues({
+        model,
+        thinkingEffort: effort,
+        fastMode: true,
+      }),
+    );
+
+    expect(config).toMatchObject({
+      model,
+      modelReasoningEffort: effort,
+      fastMode: true,
+    });
+  });
+
   it("omits model when the operator leaves it blank", () => {
     const config = buildCodexLocalConfig(makeValues({ model: "" }));
 
@@ -97,7 +113,6 @@ describe("buildPaperclipRunnerConfig", () => {
       "engine",
       "agentCommand",
       "stateDir",
-      "instructionsFilePath",
       "modelReasoningEffort",
       "search",
       "fastMode",
@@ -149,7 +164,7 @@ describe("buildPaperclipRunnerConfig", () => {
       model: "openrouter/deepseek/deepseek-v4-flash-0731",
       opencodePermissionMode: "allow",
       codexPermissionMode: "never",
-      acpxPermissionMode: "approve-reads",
+      acpxPermissionMode: "approve-all",
     });
   });
 
@@ -169,24 +184,15 @@ describe("buildPaperclipRunnerConfig", () => {
     });
   });
 
-  it.each([
-    ["claude", "claude-sonnet-5"],
-    ["codex", "gpt-5.6-sol"],
-  ] as const)("builds the qualified ACPX %s profile", (acpxAgent, model) => {
-    expect(buildPaperclipRunnerConfig(makeValues({
-      adapterType: "paperclip_runner",
-      model: "stale-model-from-another-provider",
-      adapterSchemaValues: {
-        provider: "acpx",
-        acpxAgent,
-        acpxPermissionMode: "approve-all",
-      },
-    }))).toMatchObject({
-      provider: "acpx",
-      acpxAgent,
-      model,
-      acpxPermissionMode: "approve-all",
-    });
+  it.each(["claude-opus-5", "my-custom-model"])("preserves the selected ACPX Claude model %s", (model) => {
+    expect(buildPaperclipRunnerConfig(makeValues({ model, adapterSchemaValues: { provider: "acpx" } })))
+      .toMatchObject({ provider: "acpx", acpxAgent: "claude", model });
+  });
+
+  it("normalizes the removed ACPX Codex configuration to native Codex", () => {
+    const config = buildPaperclipRunnerConfig(makeValues({ model: "gpt-5.6-sol", adapterSchemaValues: { provider: "acpx", acpxAgent: "codex" } }));
+    expect(config).toMatchObject({ provider: "codex", model: "gpt-5.6-sol" });
+    expect(config).not.toHaveProperty("acpxAgent");
   });
 
   it("does not materialize the unavailable ACPX Pi profile", () => {

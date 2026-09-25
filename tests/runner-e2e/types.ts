@@ -10,10 +10,17 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "everyday_workflow"
+
+  | "continuation"
+  | "first_task"
+  | "agent_chat"
+  | "governed_tool_review"
   | "single_turn"
   | "plan_revision_acceptance"
   | "question_resume_completion"
-  | "plan_approval_completion";
+  | "plan_approval_completion"
+  | "warm_three_turn";
 
 export interface SecretReference {
   type: "secret_ref";
@@ -73,6 +80,8 @@ export interface RunnerProfileFixture {
 
 export interface EnvironmentFixture {
   id: RunnerEnvironmentId;
+  /** Distinguishes materially different configurations that share a provider ID. */
+  configurationKey?: string;
   label: string;
   groups: readonly string[];
   driver: "local" | "sandbox";
@@ -103,6 +112,7 @@ export type Matcher =
   | { kind: "runtime_mode"; expected: RunnerGeneration }
   | { kind: "environment"; expected: RunnerEnvironmentId }
   | { kind: "file_exists"; path: string }
+  | { kind: "file_exact"; path: string; expected: string }
   | { kind: "file_contains"; path: string; expected: string }
   | { kind: "artifact_exists"; name: string; mimeType?: string }
   | { kind: "json_path"; path: string; expected: unknown }
@@ -115,21 +125,26 @@ export interface RunnerTaskFixture {
   workMode: RunnerTaskWorkMode;
   flow: RunnerTaskFlow;
   expectedRunCount: number;
+  /** Optional lower bound; expectedRunCount remains the maximum/cost estimate. */
+  minimumExpectedRunCount?: number;
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
-    issue: "done";
-    run: "succeeded";
+    issue: "done" | "in_review" | "blocked";
+    run: "succeeded" | "failed";
   };
   buildTitle(nonce: string): string;
   buildPrompt(nonce: string): string;
   buildVisibleMarker(nonce: string): string;
   buildRevisionRequest?(nonce: string): string;
+  buildFollowupMessages?(nonce: string): readonly [string, string];
+  turnTimeoutMs?: number;
   buildQuestionAnswer?(nonce: string): {
     optionLabel: string;
     expectedMarker: string;
   };
   /** Restart the isolated Paperclip server after the waiting turn settles. */
   restartServerBeforeQuestionAnswer?: boolean;
+  toolReviewDecision?: "approve" | "decline" | "always" | "restart";
   buildPlanMarkers?(nonce: string): {
     draft: string;
     revised: string;
@@ -156,8 +171,11 @@ export interface RunnerSuiteFixture {
   profiles: readonly RunnerProfileFixture[];
   environments: readonly EnvironmentFixture[];
   tasks: readonly RunnerTaskFixture[];
+  excludedExecutionIds?: readonly string[];
   expectedMatrixSize: number;
   definitionMetadata?: Readonly<Record<string, unknown>>;
+  /** Requires an explicit suite or execution ID; excluded from scheduled --all. */
+  manualOnly?: boolean;
 }
 
 export interface MatrixJob {
@@ -173,6 +191,7 @@ export interface MatrixJob {
 
 export type FailureClass =
   | "candidate_failure"
+  | "provider_variance"
   | "transient_infrastructure"
   | "permanent_infrastructure"
   | "secret_leak"
@@ -223,8 +242,10 @@ export interface RunnerE2EBillingSummary {
   reportedCostUsd: number;
   /** Public-list-price estimate for metered execution infrastructure. */
   estimatedRuntimeCostUsd: number;
-  /** Reported model subtotal plus the runtime list-price estimate. */
-  observedAndEstimatedCostUsd: number;
+  /** Separately recorded post-processing judge usage; absent when not judged. */
+  judge?: { inputTokens: number | null; outputTokens: number | null; estimatedCostUsd: number | null; reservedCostUsd: number };
+  /** Reported model subtotal plus runtime and judge list-price estimates. */
+  observedAndEstimatedCostUsd: number | null;
   complete: boolean;
 }
 
@@ -258,6 +279,17 @@ export interface RunnerE2EResult {
   issueId?: string;
   issueIdentifier?: string | null;
   runIds?: string[];
+  turnTimings?: Array<{
+    turn: number;
+    submittedAt: string;
+    runStartedAt: string | null;
+    runFinishedAt: string | null;
+    schedulerLatencyMs: number | null;
+    runDurationMs: number | null;
+    responseLatencyMs: number | null;
+    runId: string;
+    leaseAcquisitionOutcome: "created" | "resumed" | "replacement" | "unknown";
+  }>;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
@@ -273,7 +305,12 @@ export interface RunnerE2EResult {
     id: string;
     label: string;
     file: string;
+    publication?: "public-runner-fixture";
+    /** Absent in historical results; new captures bind the exact PNG bytes. */
+    sha256?: string;
   }>;
+  firstTask?: import("./first-task-scoring.js").FirstTaskEvidence;
+  firstTaskQuality?: import("./first-task-quality.js").FirstTaskQuality;
   cleanup: "not_started" | "passed" | "failed";
 }
 
@@ -285,6 +322,7 @@ export interface RunnerE2ESuiteSummary {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   complete: boolean;
@@ -292,14 +330,24 @@ export interface RunnerE2ESuiteSummary {
   billing: RunnerE2EAggregateBillingSummary;
 }
 
+export interface RunnerE2EJudgeBillingSummary {
+  attempts: number;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number | null;
+  reservedCostUsd: number;
+  attemptsWithUnknownUsage: number;
+}
+
 export interface RunnerE2EAggregateBillingSummary {
+  judge?: RunnerE2EJudgeBillingSummary;
   testCount: number;
   agentRunDurationMs: number;
   leaseDurationMs: number;
   llm: RunnerE2EBillingSummary["llm"];
   reportedLlmCostUsd: number;
   estimatedRuntimeCostUsd: number;
-  observedAndEstimatedCostUsd: number;
+  observedAndEstimatedCostUsd: number | null;
   testsWithCompleteBilling: number;
 }
 
@@ -319,6 +367,7 @@ export interface RunnerE2ECampaign {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   rankingSnapshots: Array<{
@@ -339,7 +388,7 @@ export interface RunnerE2EHistoryExecution {
   caseId: string;
   provider: string;
   model: string;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "incomplete";
   durationMs: number;
   attempt: number;
   cleanup: RunnerE2EResult["cleanup"];
@@ -355,6 +404,7 @@ export interface RunnerE2EHistoryCampaign {
   executed: number;
   passed: number;
   failed: number;
+  incomplete?: number;
   retries: number;
   cleanupPassed: boolean;
   publicUrl: string;
